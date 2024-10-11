@@ -1,0 +1,114 @@
+---
+title: "Data Science as Field NYPD"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+date: "2024-09-26"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(lubridate)
+library(tidyverse)
+library(ggplot2)
+```
+
+## Introduction
+
+This analysis will work with data from City of New York about historical shooting incidents reported to the NYPD. The data can be found [here](https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv).
+
+Some of the features of the data are the date and time of the shooting, the borough with additional location details, as well as some demographic data on the victim and perpetrator if available.
+
+The below code snippet is to load and handle some minor data cleaning. The output from the cell will also provide a high-level summary of the loaded data frame.
+
+```{r summary}
+nypd_url = "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv"
+df_nypd = read.csv(nypd_url)
+# want to convert columns
+# dates to date type
+# strings to factors where appropriate
+# Check for missing data
+df_nypd_clean = df_nypd %>%
+  # select only required columns
+  select(c("INCIDENT_KEY", "OCCUR_DATE", "OCCUR_TIME", "BORO", "LOC_OF_OCCUR_DESC", "STATISTICAL_MURDER_FLAG",
+           "PERP_AGE_GROUP", "PERP_SEX", "PERP_RACE",
+           "VIC_AGE_GROUP", "VIC_SEX", "VIC_RACE",
+           )
+         ) %>%
+  # convert data types
+  mutate(OCCUR_DATE = as_date(OCCUR_DATE, format="%m/%d/%Y"),
+                              OCCUR_DATETIME = as_datetime(paste(OCCUR_DATE, OCCUR_TIME)),
+                              OCCUR_YEAR = year(OCCUR_DATE),
+                              OCCUR_MONTH = month(OCCUR_DATE),
+                              OCCUR_HOUR = hour(OCCUR_DATETIME),
+                              OCCUR_DOW = factor(weekdays(OCCUR_DATE),
+                                                 levels=c("Sunday", "Monday", "Tuesday", "Wednesday",
+                                                          "Thursday", "Friday", "Saturday"),
+                                                 ordered=TRUE),
+                                   # Location details
+                              BORO = as.factor(BORO),
+                              LOC_OF_OCCUR_DESC = as.factor(LOC_OF_OCCUR_DESC),
+                              #LOC_CLASSFCTN_DESC = as.factor(LOC_CLASSFCTN_DESC),
+                              #LOCATION_DESC = as.factor(LOCATION_DESC),
+                              # Perp details
+                              PERP_AGE_GROUP = as.factor(PERP_AGE_GROUP),
+                              PERP_SEX = as.factor(PERP_SEX),
+                              PERP_RACE = as.factor(PERP_RACE),
+                              # Victim details
+                              VIC_AGE_GROUP = as.factor(VIC_AGE_GROUP),
+                              VIC_SEX = as.factor(VIC_SEX),
+                              VIC_RACE = as.factor(VIC_RACE),
+                              
+                              STATISTICAL_MURDER_FLAG = as.logical(STATISTICAL_MURDER_FLAG)
+                              )
+
+summary(df_nypd_clean)
+```
+
+## Shootings by Borough
+
+An initial thing to consider is which boroughs have the most shootings. We can see in the below bar chart Brooklyn has the highest number of shootings. This is not too suprising as Brooklyn has the largest population amonst the 5 boroughs from the 2020 census.
+
+```{r boro}
+
+df_nypd_clean %>%
+  group_by(BORO) %>%
+  count() %>%
+  ggplot(aes(x=BORO, y=n)) + geom_bar(stat="identity", aes(fill=BORO))
+```
+
+
+## Shootings Over the Years
+
+Our data covers the years `r min(df_nypd_clean$OCCUR_YEAR)` to `r max(df_nypd_clean$OCCUR_YEAR)`. We can see the number of shootings is decreasing significantly until 202 where we see a big spike after which it starts to fall again. The plot includes a line chart by borough along with a fitted line for each covering the range of 2006 to 2019.
+
+```{r yearly}
+df_nypd_year_cnt = df_nypd_clean %>%
+  group_by(BORO, OCCUR_YEAR) %>%
+  count()
+
+ggplot(df_nypd_year_cnt, aes(x=OCCUR_YEAR, y=n, colour=BORO)) +
+  geom_line(data=df_nypd_year_cnt) +
+  geom_smooth(data=subset(df_nypd_year_cnt, OCCUR_YEAR <= 2019), method='lm', formula=y~x, se=F)
+```
+
+## Shootings by Day of Week and Time of Day
+
+Based on the below scatter plots we can see weekends and late nights are when most shootings occur.
+
+```{r dow}
+df_nypd_clean %>%
+  group_by(BORO, OCCUR_DOW) %>%
+  count() %>%
+  ggplot(aes(x=OCCUR_DOW, y=n)) + geom_point(aes(color=BORO))
+
+df_nypd_clean %>%
+  group_by(BORO, OCCUR_HOUR) %>%
+  count() %>%
+  ggplot(aes(x=OCCUR_HOUR, y=n)) + geom_line(aes(color=BORO))
+```
+
+## Bias Discussion
+
+From the above analysis, we can see when and where (at a high level) shootings occur in NYC. Some things that may have biased our analysis is the drastically differing sizes of the boroughs, both in size and land area. We may see differing statistics if we were to scale the counts of shootings to instead be per some unit of population to help understand rate metrics. Because if we have more people, there is generally a higher likelihood of there being a shooting. We also are only considering the high level view of boroughs, but each of the 5 boroughs have a diverse variety of neighborhoods with different demographics that can factor into higher rates of shootings.
