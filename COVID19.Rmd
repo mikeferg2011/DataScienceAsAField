@@ -1,0 +1,145 @@
+---
+title: "COVID19"
+output: html_document
+date: "`r Sys.Date()`"
+---
+```{r imports}
+knitr::opts_chunk$set(echo = TRUE)
+library(lubridate)
+library(tidyverse)
+library(ggplot2)
+library(prophet)
+```
+
+## Load Data and Prepare Data
+```{r load}
+knitr::opts_chunk$set(echo = TRUE)
+
+base_url = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+cases_global = read.csv(paste0(base_url, "time_series_covid19_confirmed_global.csv"))
+deaths_global = read.csv(paste0(base_url, "time_series_covid19_deaths_global.csv"))
+```
+
+### Pivot Data
+```{r pivot}
+cases_global_clean = cases_global %>%
+  pivot_longer(cols = -c(Province.State, Country.Region, Lat, Long),
+               names_to = 'ds',
+               values_to = 'cases') %>%
+  mutate(ds = as_date(ds, format="X%m.%d.%y")) %>%
+  rename_with(tolower) %>% 
+  rename(province_state = province.state,
+         country_region = country.region)
+
+deaths_global_clean = deaths_global %>%
+  pivot_longer(cols = -c(Province.State, Country.Region, Lat, Long),
+               names_to = 'ds',
+               values_to = 'deaths') %>%
+  mutate(ds = as_date(ds, format="X%m.%d.%y")) %>%
+  rename_with(tolower) %>% 
+  rename(province_state = province.state,
+         country_region = country.region)
+```
+
+### Join Cases and Deaths Dataset
+```{r joins}
+global_data = merge(cases_global_clean, deaths_global_clean,
+                    by = intersect(names(cases_global_clean), names(deaths_global_clean)),
+                    all.x = TRUE)
+
+ds_max = max(global_data$ds)
+```
+
+### Convert Select and Factorize
+```{r factors}
+global_data = global_data %>%
+  mutate(province_state = as.factor(province_state),
+         country_region = as.factor(country_region),
+         )
+```
+
+### Get daily values
+```{r daily}
+global_data = global_data %>%
+  arrange(province_state, country_region, ds) %>%
+  group_by(province_state, country_region) %>%
+  mutate(cases_dly = c(cases[1], diff(cases)),
+         deaths_dly = c(deaths[1], diff(deaths)),
+         )
+```
+
+## How do deaths lag cases
+
+Based on the below graph we can see that the larger peaks in deaths trail a couple weeks behind. To help demonstrate this the dates were filtered for 2021 and 2022 to avoid the periods of largest increases and decreases.
+
+```{r daily_graph}
+df_temp = global_data %>%
+  filter(ds >= '2021-01-01') %>%
+  filter(ds < '2023-01-01') %>%
+  group_by(ds) %>%
+  summarise(cases_dly = sum(cases_dly),
+            deaths_dly = sum(deaths_dly),
+            ratio = deaths_dly / cases_dly,
+            )
+
+scale_factor = max(df_temp$deaths_dly) / max(df_temp$cases_dly)
+
+df_temp %>%
+  mutate(deaths_scaled = deaths_dly / scale_factor) %>%
+  ggplot(aes(x=ds)) +
+    geom_line(aes(y=cases_dly), color='blue') +
+    geom_line(aes(y=deaths_scaled), color='red') +
+    scale_y_continuous(
+      # Features of the first axis
+      name = "Cases",
+      # Add a second axis and specify its features
+      sec.axis = sec_axis(~ . * (scale_factor) , name="Deaths")
+    )
+```
+
+## How does day of week impact case reporting
+
+In the below boxplot we can see that weekends (Saturday and Sunday) have fewer numbers of reported cases compared to weekdays. We cannot definitively say what the cause is for this behavior as it is unlikely people across the globe just don't get sick on weekends. It is likely that reporting agencies in some countries or within countries are closed on weekends meaning cases would not be reported on those days. For the plot I have restricted to 2021 and removed outliers from the graph for a more pleasant graph that gets the same point across.
+
+```{r dow}
+df_temp = global_data %>%
+  filter(ds >= '2021-01-01') %>%
+  filter(ds < '2022-01-01') %>%
+  group_by(ds) %>%
+  summarise(cases_dly = sum(cases_dly),
+            deaths_dly = sum(deaths_dly),
+            ratio = deaths_dly / cases_dly,
+            ) %>%
+  mutate(dow = factor(weekdays(ds),
+                      levels=c("Sunday", "Monday", "Tuesday", "Wednesday",
+                               "Thursday", "Friday", "Saturday"),
+                      ordered=TRUE),
+  )
+
+df_temp %>%
+  ggplot(aes(x=dow, y=cases_dly)) +
+    geom_boxplot(outlier.shape = NA) +
+    scale_y_continuous(limits = c(0, quantile(df_temp$cases_dly, 0.9)*1.05))
+```
+
+## Time Series Model of Daily Cases
+
+Using the package `prophet` we can perform easy time series forecasting and decomposition. Here we will concern ourselves with the decomposition to see if the number of cases has day of week or yearly seasonality. The component plot below shows that our model indicates similar day of week seasonality as the boxplot from the previous section as well as yearly seasonality with large increases in January and minor increases in mid to late summer. The lowest point in the yearly seasonality comes in the early summer around June.
+
+```{r prophet}
+df_temp = global_data %>%
+  group_by(ds) %>%
+  summarise(cases_dly = sum(cases_dly),
+            deaths_dly = sum(deaths_dly),
+            ratio = deaths_dly / cases_dly,
+            ) %>%
+  mutate(y=cases_dly)
+
+m = prophet(df_temp[c('ds', 'y')], seasonality.mode = 'multiplicative')
+
+fcst = predict(m)
+
+plot(m, fcst)
+
+prophet_plot_components(m, fcst)
+```
